@@ -87,6 +87,7 @@ export default function parseChordLine(
 	const allBars = [];
 	const emptyBar = { allChords: [] };
 	const subBeatGroupsChordCount = {};
+	const subBeatGroupsSpan = {}; // beats a sub-beat group spans (`[..]..` = 2), default 1
 
 	let bar = _cloneDeep(emptyBar);
 	let chord = {};
@@ -161,7 +162,7 @@ export default function parseChordLine(
 		};
 	}
 
-	setSubBeatInfo(allBars, subBeatGroupsChordCount);
+	setSubBeatInfo(allBars, subBeatGroupsChordCount, subBeatGroupsSpan);
 
 	return {
 		allBars,
@@ -227,11 +228,14 @@ export default function parseChordLine(
 
 		bar.allChords.push(chord);
 
-		if (token.endsWith(syntax.subBeatCloser)) {
+		const closerIndex = token.indexOf(syntax.subBeatCloser);
+		if (closerIndex > -1) {
 			checkSubBeatGroupChordCount(token);
+			const span = getSubBeatGroupSpan(token, closerIndex);
+			subBeatGroupsSpan[subBeatGroupIndex] = span;
 			isInSubBeatGroup = false;
 			subBeatGroupIndex++;
-			currentBeatCount += 1;
+			currentBeatCount += span; // a sub-beat group spans `span` beats (default 1)
 		}
 	}
 
@@ -277,7 +281,10 @@ export default function parseChordLine(
 }
 
 function checkSubBeatGroupToken(chordLine, token) {
-	if (hasBeatCount(token)) {
+	// Dots are allowed only as the group's span suffix, after the closer (`]..`);
+	// a beat count on a chord inside the group is invalid.
+	const chordPart = token.split(syntax.subBeatCloser)[0];
+	if (hasBeatCount(chordPart)) {
 		throw new InvalidSubBeatGroupException({
 			chordLine,
 			symbol: token,
@@ -288,6 +295,15 @@ function checkSubBeatGroupToken(chordLine, token) {
 
 function hasBeatCount(token) {
 	return token.indexOf(syntax.chordBeatCount) > -1;
+}
+
+// The beats a sub-beat group spans: the suffix after the closer — dots (`]..` = 2)
+// or a number (`]2` = 2). Default 1 (the original within-one-beat group).
+function getSubBeatGroupSpan(token, closerIndex) {
+	const suffix = token.slice(closerIndex + 1);
+	if (/^\.+$/.test(suffix)) return suffix.length;
+	if (/^\d+$/.test(suffix)) return Number.parseInt(suffix, 10);
+	return 1;
 }
 
 function isNoChordSymbol(token) {
@@ -353,7 +369,7 @@ export function hasUnevenChordsDurations(bar) {
 	return bar.allChords.some((chord) => chord.duration !== firstChordDuration);
 }
 
-function setSubBeatInfo(allBars, subBeatGroupsChordCount) {
+function setSubBeatInfo(allBars, subBeatGroupsChordCount, subBeatGroupsSpan = {}) {
 	let subBeatGroupIndex = -1;
 	let subBeatChordIndex = 0;
 	let previousChordBeatId = '';
@@ -367,8 +383,11 @@ function setSubBeatInfo(allBars, subBeatGroupsChordCount) {
 					subBeatChordIndex = 0;
 				}
 
+				// Each chord lasts the group's span divided by its chord count, so
+				// `[G5 E5 D5]..` (span 2, 3 chords) → 2/3 beat each (a real triplet).
+				const span = subBeatGroupsSpan[subBeatGroupIndex] || 1;
 				const durationString = (
-					1 / subBeatGroupsChordCount[subBeatGroupIndex]
+					span / subBeatGroupsChordCount[subBeatGroupIndex]
 				).toPrecision(2);
 
 				chord.duration = Number.parseFloat(durationString);
